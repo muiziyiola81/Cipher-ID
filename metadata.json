@@ -1,0 +1,6 @@
+{
+  "name": "CipherID Messaging",
+  "description": "Private real-time messaging powered by unique 10-digit Messaging IDs. Connect instantly without sharing your email or phone number.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
