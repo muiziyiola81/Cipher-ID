@@ -6,6 +6,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { User as SupabaseUser } from '@supabase/supabase-js';
 import {
+  AlertTriangle,
   Ban,
   Bell,
   Check,
@@ -35,6 +36,8 @@ import {
   getOrCreateConversation,
   getPublicProfileByUid,
   markNotificationAsRead,
+  subscribeToAdminReports,
+  subscribeToOwnProfile,
   subscribeToUserBlocks,
   subscribeToUserConversations,
   subscribeToUserNotifications,
@@ -96,6 +99,7 @@ export default function App() {
   const [blockedMeUids, setBlockedMeUids] = useState<Set<string>>(new Set());
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [myReports, setMyReports] = useState<ReportRecord[]>([]);
+  const [adminReports, setAdminReports] = useState<ReportRecord[]>([]);
   const [showNotificationsDrawer, setShowNotificationsDrawer] = useState(false);
 
   // Modals
@@ -184,6 +188,14 @@ export default function App() {
   useEffect(() => {
     if (!authReady || !sbUser || !profile) return;
 
+    const unsubOwnProfile = subscribeToOwnProfile(
+      profile.uid,
+      (liveOwnProfile, liveIsAdmin) => {
+        setProfile(liveOwnProfile);
+        setIsAdmin(liveIsAdmin);
+      }
+    );
+
     const unsubConvs = subscribeToUserConversations(profile.uid, (liveConvs) => {
       setConversations(liveConvs);
     });
@@ -204,13 +216,21 @@ export default function App() {
       setMyReports(liveReports);
     });
 
+    const unsubAdminReports = isAdmin
+      ? subscribeToAdminReports((allReports) => {
+          setAdminReports(allReports);
+        })
+      : () => {};
+
     return () => {
+      unsubOwnProfile();
       unsubConvs();
       unsubBlocks();
       unsubNotifs();
       unsubReports();
+      unsubAdminReports();
     };
-  }, [authReady, sbUser, profile?.uid]);
+  }, [authReady, sbUser, profile?.uid, isAdmin]);
 
   // 3. Hydrate peer profiles for conversations
   useEffect(() => {
@@ -306,6 +326,18 @@ export default function App() {
 
   const handleStartConversationWithUser = async (target: MessagingIdIndex) => {
     if (!profile) return;
+    if (profile.status !== 'active') {
+      showToast(
+        profile.status === 'restricted'
+          ? 'Your account is restricted and cannot start new conversations.'
+          : 'Your account is suspended and cannot use messaging features.'
+      );
+      throw new Error(
+        profile.status === 'restricted'
+          ? 'Your account is currently restricted and cannot start new conversations.'
+          : 'Your account has been suspended and cannot use messaging features.'
+      );
+    }
     const peerProfile: UserProfile = {
       uid: target.uid,
       displayName: target.displayName,
@@ -588,14 +620,21 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActiveTab('admin')}
-                className={`w-full min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-medium flex items-center gap-3 transition-colors ${
+                className={`w-full min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-medium flex items-center justify-between transition-colors ${
                   activeTab === 'admin'
                     ? 'bg-white/10 text-white font-semibold'
                     : 'text-[#94A3B8] hover:text-white hover:bg-white/5'
                 }`}
               >
-                <Shield className="w-4 h-4 text-[#06B6D4]" />
-                <span>Admin Dashboard</span>
+                <span className="flex items-center gap-3">
+                  <Shield className="w-4 h-4 text-[#06B6D4]" />
+                  <span>Admin Dashboard</span>
+                </span>
+                {adminReports.filter((r) => r.status === 'pending').length > 0 && (
+                  <span className="font-mono text-[11px] px-2 py-0.5 rounded-md bg-[#F59E0B]/20 text-[#F59E0B] font-bold tabular-nums">
+                    {adminReports.filter((r) => r.status === 'pending').length}
+                  </span>
+                )}
               </button>
             )}
           </nav>
@@ -628,6 +667,19 @@ export default function App() {
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
+        {/* Account Restricted Standing Banner */}
+        {profile.status === 'restricted' && (
+          <div
+            role="alert"
+            className="bg-[#F59E0B]/15 border-b border-[#F59E0B]/40 px-4 py-2.5 text-xs text-[#F59E0B] flex items-center justify-center gap-2.5 shrink-0"
+          >
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>
+              <strong>Account Restricted:</strong> Your account is currently under a messaging restriction. You can view your existing conversations, but sending new messages and starting new chats are disabled.
+            </span>
+          </div>
+        )}
+
         {/* Mobile Top App Bar */}
         {!(activeTab === 'chats' && selectedConversationId) && (
           <header className="lg:hidden h-14 px-4 bg-[#11131C]/90 backdrop-blur-md border-b border-white/[0.07] flex items-center justify-between gap-2 shrink-0">
@@ -1046,6 +1098,22 @@ export default function App() {
             onPrivateConfigUpdated={(upd) =>
               setPrivateConfig((prev) => (prev ? { ...prev, ...upd } : prev))
             }
+            onAdminGranted={() => {
+              setIsAdmin(true);
+              setActiveTab('admin');
+              if (sbUser) {
+                ensureUserProfile({
+                  uid: sbUser.id,
+                  email: sbUser.email || privateConfig.email,
+                })
+                  .then((ensured) => {
+                    setProfile(ensured.profile);
+                    setPrivateConfig(ensured.privateConfig);
+                    setIsAdmin(true);
+                  })
+                  .catch(() => {});
+              }
+            }}
             onOpenAdmin={() => setActiveTab('admin')}
             onOpenLegal={(tab) => setLegalTab(tab)}
             onSignOut={handleSignOut}
@@ -1054,7 +1122,7 @@ export default function App() {
         )}
 
         {/* Admin Dashboard Tab */}
-        {activeTab === 'admin' && isAdmin && (
+        {activeTab === 'admin' && (
           <AdminDashboard
             onBack={() => setActiveTab('settings')}
             onNotifyToast={showToast}

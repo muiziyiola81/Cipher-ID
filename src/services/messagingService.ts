@@ -41,17 +41,17 @@ interface ProfileRow {
 
 function mapProfileRow(row: ProfileRow): UserProfile {
   return {
-    uid: row.id,
-    displayName: row.display_name,
-    username: row.username,
-    messagingId: row.messaging_id,
-    avatarUrl: row.avatar_url || AVATAR_PRESETS[0],
-    bio: row.bio || '',
-    status: row.status || 'active',
+    uid: String(row.id || ''),
+    displayName: String(row.display_name || 'Cipher User'),
+    username: String(row.username || 'user'),
+    messagingId: String(row.messaging_id || '0000000000'),
+    avatarUrl: String(row.avatar_url || AVATAR_PRESETS[0]),
+    bio: String(row.bio || ''),
+    status: (row.status as AccountStatus) || 'active',
     privacyAllowIdLookup: row.privacy_allow_id_lookup ?? true,
     privacyShowReadReceipts: row.privacy_show_read_receipts ?? true,
-    createdAt: row.created_at || new Date().toISOString(),
-    updatedAt: row.updated_at || new Date().toISOString(),
+    createdAt: String(row.created_at || new Date().toISOString()),
+    updatedAt: String(row.updated_at || new Date().toISOString()),
   };
 }
 
@@ -333,6 +333,25 @@ export async function getOrCreateConversation(
     throw new Error('You cannot start a conversation with your own Messaging ID.');
   }
 
+  // Verify the caller's latest account standing directly from Supabase
+  const { data: callerRow } = await supabase
+    .from('profiles')
+    .select('status')
+    .eq('id', currentUid)
+    .maybeSingle();
+
+  const callerStatus = (callerRow?.status as AccountStatus) || 'active';
+  if (callerStatus === 'suspended') {
+    throw new Error(
+      'Your account has been suspended and cannot use messaging features.'
+    );
+  }
+  if (callerStatus === 'restricted') {
+    throw new Error(
+      'Your account is currently restricted and cannot start new conversations.'
+    );
+  }
+
   const [participantOneId, participantTwoId] = [currentUid, targetUid].sort();
 
   const { data: existing } = await supabase
@@ -408,6 +427,37 @@ export async function sendMessage(params: {
   if (!cleanContent) return;
 
   const { conversation, senderProfile, replyTo } = params;
+
+  if (senderProfile.status === 'suspended') {
+    throw new Error(
+      'Your account has been suspended and cannot send messages.'
+    );
+  }
+  if (senderProfile.status === 'restricted') {
+    throw new Error(
+      'Your account is currently restricted and cannot send new messages.'
+    );
+  }
+
+  // Re-verify live status from database before inserting
+  const { data: liveSender } = await supabase
+    .from('profiles')
+    .select('status')
+    .eq('id', senderProfile.uid)
+    .maybeSingle();
+
+  const liveStatus = (liveSender?.status as AccountStatus) || senderProfile.status;
+  if (liveStatus === 'suspended') {
+    throw new Error(
+      'Your account has been suspended and cannot send messages.'
+    );
+  }
+  if (liveStatus === 'restricted') {
+    throw new Error(
+      'Your account is currently restricted and cannot send new messages.'
+    );
+  }
+
   const isSenderOne = conversation.participantOneId === senderProfile.uid;
   const recipientUid = isSenderOne
     ? conversation.participantTwoId
@@ -576,6 +626,49 @@ export async function markNotificationAsRead(notificationId: string): Promise<vo
 // Supabase Realtime Subscriptions
 // ---------------------------------------------------------------------------
 
+let realtimeSubSeq = 0;
+function nextChannelTopic(prefix: string): string {
+  realtimeSubSeq += 1;
+  return `${prefix}:${realtimeSubSeq}:${Date.now()}`;
+}
+
+export function subscribeToOwnProfile(
+  uid: string,
+  onUpdate: (profile: UserProfile, isAdmin: boolean) => void
+): () => void {
+  const fetchOwn = async () => {
+    const { data } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', uid)
+      .maybeSingle();
+    if (data) {
+      const row = data as ProfileRow;
+      onUpdate(mapProfileRow(row), Boolean(row.is_admin));
+    }
+  };
+
+  const channel: RealtimeChannel = supabase
+    .channel(nextChannelTopic(`own-profile:${uid}`))
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'profiles',
+        filter: `id=eq.${uid}`,
+      },
+      () => {
+        fetchOwn();
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}
+
 export function subscribeToUserConversations(
   uid: string,
   onUpdate: (conversations: Conversation[]) => void
@@ -609,7 +702,7 @@ export function subscribeToUserConversations(
   fetchConversations();
 
   const channel: RealtimeChannel = supabase
-    .channel(`conversations:${uid}`)
+    .channel(nextChannelTopic(`conversations:${uid}`))
     .on(
       'postgres_changes',
       {
@@ -663,7 +756,7 @@ export function subscribeToConversationMessages(
   fetchMessages();
 
   const channel: RealtimeChannel = supabase
-    .channel(`messages:${conversationId}`)
+    .channel(nextChannelTopic(`messages:${conversationId}`))
     .on(
       'postgres_changes',
       {
@@ -724,7 +817,7 @@ export function subscribeToUserBlocks(
   fetchBlocks();
 
   const channel: RealtimeChannel = supabase
-    .channel(`blocks:${uid}`)
+    .channel(nextChannelTopic(`blocks:${uid}`))
     .on(
       'postgres_changes',
       {
@@ -776,7 +869,7 @@ export function subscribeToUserNotifications(
   fetchNotifications();
 
   const channel: RealtimeChannel = supabase
-    .channel(`notifications:${uid}`)
+    .channel(nextChannelTopic(`notifications:${uid}`))
     .on(
       'postgres_changes',
       {
@@ -885,7 +978,7 @@ export function subscribeToUserReports(
   fetchReports();
 
   const channel: RealtimeChannel = supabase
-    .channel(`user-reports:${uid}`)
+    .channel(nextChannelTopic(`user-reports:${uid}`))
     .on(
       'postgres_changes',
       {
@@ -916,44 +1009,42 @@ export async function adminFetchAllUsers(): Promise<UserProfile[]> {
     .order('created_at', { ascending: false })
     .limit(250);
 
-  if (error || !data) {
-    throw new Error(error?.message || 'Failed to load user profiles.');
+  if (error) {
+    console.warn('[Admin Fetch Users Warning]', error.message);
+    return [];
   }
 
-  return data.map((row) => mapProfileRow(row as ProfileRow));
+  return (data || []).map((row) => mapProfileRow(row as ProfileRow));
 }
 
 export async function adminFetchAllReports(): Promise<ReportRecord[]> {
-  const { data, error } = await supabase
-    .from('reports')
-    .select(
-      `id, reporter_id, reported_user_id, message_id, reason, description, status, created_at, updated_at,
-       reporter:profiles!reports_reporter_id_fkey(display_name, username, messaging_id, avatar_url),
-       reported:profiles!reports_reported_user_id_fkey(display_name, username, messaging_id, avatar_url, status),
-       related_message:messages!reports_message_id_fkey(content, deleted_at)`
-    )
-    .order('created_at', { ascending: false })
-    .limit(250);
-
-  if (!error && data) {
-    return data.map((row: Record<string, unknown>) => mapReportRow(row));
-  }
-
-  // Graceful fallback if relational join fails: fetch reports and profiles separately
   const { data: plainReports, error: plainErr } = await supabase
     .from('reports')
     .select('*')
     .order('created_at', { ascending: false })
     .limit(250);
 
-  if (plainErr || !plainReports) {
-    throw new Error(plainErr?.message || error?.message || 'Failed to load moderation reports.');
+  if (plainErr) {
+    console.warn('[Admin Fetch Reports Warning]', plainErr.message);
+    return [];
+  }
+
+  if (!plainReports || plainReports.length === 0) {
+    return [];
   }
 
   const userIds = Array.from(
     new Set(
       plainReports
         .flatMap((r) => [String(r.reporter_id || ''), String(r.reported_user_id || '')])
+        .filter(Boolean)
+    )
+  );
+
+  const messageIds = Array.from(
+    new Set(
+      plainReports
+        .map((r) => (r.message_id ? String(r.message_id) : ''))
         .filter(Boolean)
     )
   );
@@ -965,17 +1056,35 @@ export async function adminFetchAllReports(): Promise<ReportRecord[]> {
       .select('*')
       .in('id', userIds);
     (profData || []).forEach((p) => {
-      profileMap.set(p.id, p as ProfileRow);
+      profileMap.set(String(p.id), p as ProfileRow);
+    });
+  }
+
+  const messageMap = new Map<string, { content?: string; deleted_at?: string | null }>();
+  if (messageIds.length > 0) {
+    const { data: msgData } = await supabase
+      .from('messages')
+      .select('id, content, deleted_at')
+      .in('id', messageIds);
+    (msgData || []).forEach((m) => {
+      messageMap.set(String(m.id), {
+        content: String(m.content || ''),
+        deleted_at: m.deleted_at ? String(m.deleted_at) : null,
+      });
     });
   }
 
   return plainReports.map((row: Record<string, unknown>) => {
     const reporterProf = profileMap.get(String(row.reporter_id || ''));
     const reportedProf = profileMap.get(String(row.reported_user_id || ''));
+    const relatedMessage = row.message_id
+      ? messageMap.get(String(row.message_id))
+      : undefined;
     return mapReportRow({
       ...row,
       reporter: reporterProf,
       reported: reportedProf,
+      related_message: relatedMessage,
     });
   });
 }
@@ -992,7 +1101,7 @@ export function subscribeToAdminReports(
   refresh();
 
   const channel: RealtimeChannel = supabase
-    .channel('admin-reports-watch')
+    .channel(nextChannelTopic('admin-reports-watch'))
     .on(
       'postgres_changes',
       {
@@ -1044,3 +1153,88 @@ export async function adminUpdateReportStatus(
     throw new Error(error.message || 'Failed to update report status.');
   }
 }
+
+/**
+ * Invokes the server-side Owner-Admin Bootstrap using the user's authenticated
+ * Supabase session and a one-time input secret.
+ *
+ * Never stores the secret in browser storage or exposes any service_role key.
+ * Supports both:
+ *   1. Supabase Edge Function (`bootstrap-owner-admin`), and
+ *   2. Supabase Server-Side SECURITY DEFINER RPC (`public.claim_owner_admin`).
+ */
+export async function bootstrapOwnerAdmin(bootstrapSecret: string): Promise<{
+  ok: boolean;
+  idempotent: boolean;
+  isAdmin: boolean;
+  message: string;
+}> {
+  const cleanSecret = bootstrapSecret.trim();
+  if (!cleanSecret) {
+    throw new Error('Please enter the server-side Owner Bootstrap Secret.');
+  }
+
+  // 1. Call the server-side PostgreSQL SECURITY DEFINER RPC `claim_owner_admin` first
+  const { data: rpcData, error: rpcError } = await supabase.rpc(
+    'claim_owner_admin',
+    {
+      bootstrap_secret: cleanSecret,
+    }
+  );
+
+  if (!rpcError && rpcData) {
+    const res = (rpcData || {}) as {
+      ok?: boolean;
+      idempotent?: boolean;
+      isAdmin?: boolean;
+      message?: string;
+    };
+    return {
+      ok: Boolean(res.ok ?? true),
+      idempotent: Boolean(res.idempotent),
+      isAdmin: Boolean(res.isAdmin ?? true),
+      message:
+        res.message ||
+        'Owner account successfully granted administrator privileges.',
+    };
+  }
+
+  // If the RPC exists and returned an explicit authorization/secret error, surface it directly
+  if (
+    rpcError &&
+    rpcError.code !== 'PGRST202' &&
+    !rpcError.message?.includes('Could not find the function')
+  ) {
+    throw new Error(rpcError.message || 'Owner-admin bootstrap failed.');
+  }
+
+  // 2. Fallback to the Supabase Edge Function `bootstrap-owner-admin` if deployed
+  const { data: fnData, error: fnError } = await supabase.functions.invoke(
+    'bootstrap-owner-admin',
+    {
+      body: { bootstrapSecret: cleanSecret },
+    }
+  );
+
+  if (!fnError && fnData && fnData.ok === true) {
+    return {
+      ok: true,
+      idempotent: Boolean(fnData.idempotent),
+      isAdmin: Boolean(fnData.isAdmin),
+      message:
+        fnData.message ||
+        'Owner account successfully granted administrator privileges via Edge Function.',
+    };
+  }
+
+  if (fnData && typeof fnData.error === 'string') {
+    throw new Error(fnData.error);
+  }
+
+  throw new Error(
+    rpcError?.message ||
+      fnError?.message ||
+      'Server-side bootstrap is not configured yet. Please run the SQL setup in your Supabase SQL Editor.'
+  );
+}
+

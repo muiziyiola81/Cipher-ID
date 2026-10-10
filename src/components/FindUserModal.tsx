@@ -141,6 +141,18 @@ export const FindUserModal: React.FC<FindUserModalProps> = ({
           </button>
         </div>
 
+        {currentProfile.status !== 'active' && (
+          <div
+            role="alert"
+            className="rounded-xl bg-[#F59E0B]/10 border border-[#F59E0B]/30 p-3.5 text-xs text-[#F59E0B] flex items-start gap-2.5"
+          >
+            <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>
+              Your account is currently {currentProfile.status}. Starting new conversations and sending messages are disabled.
+            </span>
+          </div>
+        )}
+
         <form onSubmit={handleSearch} className="space-y-3">
           <div>
             <label htmlFor="messaging-id-search" className="block text-xs font-medium text-[#94A3B8] mb-1.5">
@@ -223,7 +235,14 @@ export const FindUserModal: React.FC<FindUserModalProps> = ({
               </p>
             )}
 
-            {blockedUids.has(foundUser.uid) ? (
+            {currentProfile.status !== 'active' ? (
+              <div className="rounded-xl bg-[#F59E0B]/10 border border-[#F59E0B]/30 p-3 text-xs text-[#F59E0B] flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 shrink-0" />
+                <span>
+                  Your account is {currentProfile.status} and cannot start new conversations.
+                </span>
+              </div>
+            ) : blockedUids.has(foundUser.uid) ? (
               <div className="rounded-xl bg-[#EF4444]/10 border border-[#EF4444]/30 p-3 text-xs text-[#EF4444] flex items-center gap-2">
                 <ShieldAlert className="w-4 h-4 shrink-0" />
                 <span>You have blocked this user. Unblock them in Settings to start a chat.</span>

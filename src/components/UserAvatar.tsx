@@ -28,20 +28,24 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
   size = 'md',
 }) => {
   const [imgError, setImgError] = React.useState(false);
+  const safeName = typeof displayName === 'string' && displayName ? displayName : 'User';
+  const safeAvatar = typeof avatarUrl === 'string' && avatarUrl ? avatarUrl : 'obsidian-cyan';
 
   const initials = React.useMemo(() => {
-    const parts = displayName.trim().split(/\s+/);
+    const parts = safeName.trim().split(/\s+/);
     if (parts.length >= 2) {
       return `${parts[0][0] || ''}${parts[1][0] || ''}`.toUpperCase();
     }
-    return (displayName.slice(0, 2) || 'CI').toUpperCase();
-  }, [displayName]);
+    return (safeName.slice(0, 2) || 'CI').toUpperCase();
+  }, [safeName]);
 
   const isExternalUrl =
-    (avatarUrl.startsWith('http://') || avatarUrl.startsWith('https://') || avatarUrl.startsWith('data:image/')) &&
+    (safeAvatar.startsWith('http://') ||
+      safeAvatar.startsWith('https://') ||
+      safeAvatar.startsWith('data:image/')) &&
     !imgError;
 
-  const presetStyle = PRESET_STYLES[avatarUrl] || PRESET_STYLES['obsidian-cyan'];
+  const presetStyle = PRESET_STYLES[safeAvatar] || PRESET_STYLES['obsidian-cyan'];
 
   return (
     <div
@@ -51,8 +55,8 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
     >
       {isExternalUrl ? (
         <img
-          src={avatarUrl}
-          alt={`${displayName} avatar`}
+          src={safeAvatar}
+          alt={`${safeName} avatar`}
           referrerPolicy="no-referrer"
           onError={() => setImgError(true)}
           className="w-full h-full object-cover"

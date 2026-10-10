@@ -25,6 +25,7 @@ import {
   formatMessagingIdDisplay,
 } from '../utils/messagingId';
 import {
+  bootstrapOwnerAdmin,
   unblockUser,
   updateNotificationSettings,
   updatePublicProfile,
@@ -41,6 +42,7 @@ interface SettingsViewProps {
   isAdmin: boolean;
   onProfileUpdated: (updated: Partial<UserProfile>) => void;
   onPrivateConfigUpdated: (updated: Partial<UserPrivateConfig>) => void;
+  onAdminGranted: () => void;
   onOpenAdmin: () => void;
   onOpenLegal: (tab: 'terms' | 'privacy' | 'about') => void;
   onSignOut: () => Promise<void>;
@@ -64,12 +66,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   isAdmin,
   onProfileUpdated,
   onPrivateConfigUpdated,
+  onAdminGranted,
   onOpenAdmin,
   onOpenLegal,
   onSignOut,
   onNotifyToast,
 }) => {
   const [subTab, setSubTab] = useState<SettingsSubTab>('profile');
+  const [bootstrapSecretInput, setBootstrapSecretInput] = useState('');
+  const [bootstrappingAdmin, setBootstrappingAdmin] = useState(false);
+  const [bootstrapFeedback, setBootstrapFeedback] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
   const [displayName, setDisplayName] = useState(profile.displayName);
   const [username, setUsername] = useState(profile.username);
   const [bio, setBio] = useState(profile.bio);
@@ -181,6 +190,32 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       onNotifyToast(`Unblocked ${name}`);
     } catch {
       onNotifyToast('Failed to unblock user');
+    }
+  };
+
+  const handleClaimOwnerAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBootstrapFeedback(null);
+    setBootstrappingAdmin(true);
+    try {
+      const res = await bootstrapOwnerAdmin(bootstrapSecretInput);
+      // Clear secret from memory immediately
+      setBootstrapSecretInput('');
+      setBootstrapFeedback({
+        type: 'success',
+        message: res.message,
+      });
+      onAdminGranted();
+      onNotifyToast(res.message);
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error ? err.message : 'Owner-admin bootstrap verification failed.';
+      setBootstrapFeedback({
+        type: 'error',
+        message: msg,
+      });
+    } finally {
+      setBootstrappingAdmin(false);
     }
   };
 
@@ -711,6 +746,66 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 • Blocked users are rejected by PostgreSQL RLS policies.<br />
                 • 10-digit Messaging IDs and administrator flags are protected by PostgreSQL triggers.
               </p>
+            </div>
+
+            {/* Server-Side Owner-Admin Bootstrap Card */}
+            <div className="rounded-2xl bg-[#161926] border border-white/10 p-5 space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                    <Shield className="w-4 h-4 text-[#06B6D4]" />
+                    <span>Owner-Admin Server Bootstrap</span>
+                  </div>
+                  <p className="text-xs text-[#94A3B8] mt-1 leading-relaxed">
+                    Ordinary users cannot modify <span className="font-mono text-white">is_admin</span>. To promote the designated owner account (<span className="font-mono text-white">{privateConfig.email}</span>), enter the server-side bootstrap secret verified by Supabase.
+                  </p>
+                </div>
+                <span
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-semibold shrink-0 ${
+                    isAdmin
+                      ? 'bg-[#10B981]/15 border border-[#10B981]/40 text-[#10B981]'
+                      : 'bg-white/5 border border-white/10 text-[#94A3B8]'
+                  }`}
+                >
+                  {isAdmin ? 'ADMIN ACTIVE' : 'STANDARD USER'}
+                </span>
+              </div>
+
+              <form onSubmit={handleClaimOwnerAdmin} className="space-y-3">
+                <div className="flex flex-col sm:flex-row gap-2.5">
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={bootstrapSecretInput}
+                    onChange={(e) => setBootstrapSecretInput(e.target.value)}
+                    placeholder="Enter server-side OWNER_BOOTSTRAP_SECRET..."
+                    className="flex-1 min-h-[42px] px-4 py-2 rounded-xl bg-[#11131C] border border-white/10 text-xs text-white placeholder-[#64748B] focus:outline-none focus:border-[#06B6D4]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={bootstrappingAdmin || !bootstrapSecretInput.trim()}
+                    className="min-h-[42px] px-5 py-2 rounded-xl bg-[#06B6D4] text-[#090A0F] text-xs font-semibold hover:bg-[#22D3EE] transition-colors disabled:opacity-50 shrink-0"
+                  >
+                    {bootstrappingAdmin
+                      ? 'Verifying on Server...'
+                      : isAdmin
+                      ? 'Re-Verify Owner Bootstrap'
+                      : 'Verify & Grant Owner Admin'}
+                  </button>
+                </div>
+
+                {bootstrapFeedback && (
+                  <div
+                    className={`rounded-xl p-3 text-xs border ${
+                      bootstrapFeedback.type === 'success'
+                        ? 'bg-[#10B981]/10 border-[#10B981]/30 text-[#10B981]'
+                        : 'bg-[#EF4444]/10 border-[#EF4444]/30 text-[#EF4444]'
+                    }`}
+                  >
+                    {bootstrapFeedback.message}
+                  </div>
+                )}
+              </form>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

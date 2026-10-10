@@ -26,12 +26,12 @@ export function generateRandom10DigitId(): string {
   return digits;
 }
 
-export function sanitizeMessagingIdInput(raw: string): string {
-  return raw.replace(/[^0-9]/g, '').slice(0, 10);
+export function sanitizeMessagingIdInput(raw: string | null | undefined): string {
+  return String(raw ?? '').replace(/[^0-9]/g, '').slice(0, 10);
 }
 
-export function isValidMessagingIdFormat(id: string): boolean {
-  return MESSAGING_ID_REGEX.test(id);
+export function isValidMessagingIdFormat(id: string | null | undefined): boolean {
+  return MESSAGING_ID_REGEX.test(String(id ?? ''));
 }
 
 /**
@@ -39,9 +39,9 @@ export function isValidMessagingIdFormat(id: string): boolean {
  * e.g. "4829103847" -> "4829 · 103 · 847" or "4829 103 847"
  * Deliberately avoids (XXX) XXX-XXXX telephone formatting.
  */
-export function formatMessagingIdDisplay(id: string): string {
+export function formatMessagingIdDisplay(id: string | null | undefined): string {
   const clean = sanitizeMessagingIdInput(id);
-  if (clean.length !== 10) return clean || id;
+  if (clean.length !== 10) return clean || String(id ?? '0000000000');
   return `${clean.slice(0, 4)} · ${clean.slice(4, 7)} · ${clean.slice(7, 10)}`;
 }
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
   Ban,
   Check,
@@ -120,10 +121,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
     return messages.filter((m) => !m.isDeleted && m.content.toLowerCase().includes(q));
   }, [messages, searchQuery]);
 
+  const isCurrentUserRestricted = currentProfile.status === 'restricted';
+  const isCurrentUserSuspended = currentProfile.status === 'suspended';
+  const isOtherUserSuspended = otherUser.status === 'suspended';
+
   const handleSend = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const trimmed = inputText.trim();
-    if (!trimmed || sending || isBlockedByMe || hasBlockedMe) return;
+    if (
+      !trimmed ||
+      sending ||
+      isBlockedByMe ||
+      hasBlockedMe ||
+      isCurrentUserRestricted ||
+      isCurrentUserSuspended ||
+      isOtherUserSuspended
+    ) {
+      return;
+    }
 
     setSending(true);
     const pendingText = trimmed;
@@ -138,10 +153,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
         content: pendingText,
         replyTo: pendingReply,
       });
-    } catch {
+    } catch (err: unknown) {
       setInputText(pendingText);
       setReplyTo(pendingReply);
-      onNotifyToast('Message could not be sent. Verify connection or block status.');
+      onNotifyToast(
+        err instanceof Error
+          ? err.message
+          : 'Message could not be sent. Verify your account status or block settings.'
+      );
     } finally {
       setSending(false);
     }
@@ -502,8 +521,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       )}
 
-      {/* Message Input or Blocked Notice */}
-      {isBlockedByMe || hasBlockedMe ? (
+      {/* Message Input, Account Restriction Notice, or Blocked Notice */}
+      {isCurrentUserRestricted || isCurrentUserSuspended ? (
+        <div
+          role="alert"
+          className="p-4 bg-[#11131C] border-t border-[#F59E0B]/30 text-center text-xs text-[#F59E0B] flex items-center justify-center gap-2.5"
+        >
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span>
+            {isCurrentUserSuspended
+              ? 'Your account is suspended and cannot send messages or use messaging features.'
+              : 'Your account is currently restricted. You can view existing messages, but you cannot send new messages or start new conversations.'}
+          </span>
+        </div>
+      ) : isOtherUserSuspended ? (
+        <div className="p-4 bg-[#11131C] border-t border-white/[0.07] text-center text-xs text-[#EF4444] flex items-center justify-center gap-2">
+          <Ban className="w-4 h-4 shrink-0" />
+          <span>This recipient’s account is currently suspended and cannot receive messages.</span>
+        </div>
+      ) : isBlockedByMe || hasBlockedMe ? (
         <div className="p-4 bg-[#11131C] border-t border-white/[0.07] text-center text-xs text-[#EF4444] flex items-center justify-center gap-2">
           <Ban className="w-4 h-4 shrink-0" />
           <span>
